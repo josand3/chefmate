@@ -74,3 +74,60 @@ export const useAppStore = create<AppState>()(
     { name: 'chefmate-store' }
   )
 )
+
+import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
+
+export type ExperienceLevel = 'beginner' | 'prep cook' | 'sous chef' | 'executive chef'
+
+export type OnboardingData = {
+  zipCode: string
+  dietaryPrefs: string[]
+  cuisines: string[]
+  experience: ExperienceLevel | ''
+}
+
+export type ChatMessage = {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  ts: number
+}
+
+export type AppState = {
+  onboarding: OnboardingData
+  hasOnboarded: boolean
+  ingredients: string[]
+  messages: ChatMessage[]
+  // actions
+  setOnboarding: (data: Partial<OnboardingData>) => void
+  completeOnboarding: () => void
+  addIngredient: (name: string) => void
+  removeIngredient: (name: string) => void
+  clearIngredients: () => void
+  addMessage: (msg: Omit<ChatMessage, 'id' | 'ts'>) => void
+}
+
+export const useAppStore = create<AppState>()(
+  persist(
+    (set, get) => ({
+      onboarding: { zipCode: '', dietaryPrefs: [], cuisines: [], experience: '' },
+      hasOnboarded: false,
+      ingredients: [],
+      messages: [],
+      setOnboarding: (data) =>
+        set((s) => ({ onboarding: { ...s.onboarding, ...data } })),
+      completeOnboarding: () => set({ hasOnboarded: true }),
+      addIngredient: (name) =>
+        set((s) => ({
+          ingredients: Array.from(new Set([...s.ingredients, name.toLowerCase().trim()]))
+        })),
+      removeIngredient: (name) =>
+        set((s) => ({ ingredients: s.ingredients.filter((i) => i !== name) })),
+      clearIngredients: () => set({ ingredients: [] }),
+      addMessage: (msg) =>
+        set((s) => ({ messages: [...s.messages, { ...msg, id: crypto.randomUUID(), ts: Date.now() }] }))
+    }),
+    { name: 'chefmate-store' }
+  )
+)

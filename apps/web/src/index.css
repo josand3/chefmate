@@ -1,0 +1,16 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light dark;
+}
+
+html, body, #root { height: 100%; }
+
+body {
+  @apply bg-surface-light text-white dark:bg-surface; /* base backgrounds */
+}
+
+/* Smooth scroll */
+html { scroll-behavior: smooth; }
