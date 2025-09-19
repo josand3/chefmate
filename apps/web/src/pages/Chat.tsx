@@ -1,6 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { uploadIngredientImage } from '../services/vision'
+import { recommend, type Recommendation } from '../services/recommend'
+import RecipeCard from '../components/RecipeCard'
+import RecipeDetailsModal from '../components/RecipeDetailsModal'
+import CookMode from '../components/CookMode'
+import { CUISINE_OPTIONS } from '../lib/emojiData'
 
 // SpeechRecognition types (vendor-prefixed fallback)
 const SpeechRecognition = (typeof window !== 'undefined' && ((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition)) as any
@@ -14,10 +19,21 @@ export default function Chat() {
   const clearIngredients = useAppStore((s) => s.clearIngredients)
   const messages = useAppStore((s) => s.messages)
   const addMessage = useAppStore((s) => s.addMessage)
+  const onboarding = useAppStore((s) => s.onboarding)
+  const addToList = useAppStore((s) => s.addToList)
+  const removeFromList = useAppStore((s) => s.removeFromList)
+  const clearList = useAppStore((s) => s.clearList)
+  const shoppingList = useAppStore((s) => s.shoppingList)
 
   const [text, setText] = useState('')
   const [uploading, setUploading] = useState(false)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const [mealType, setMealType] = useState<'' | 'breakfast' | 'lunch' | 'dinner'>('')
+  const [dietFilters, setDietFilters] = useState<string[]>(onboarding.dietaryPrefs || [])
+  const [typing, setTyping] = useState(false)
+  const [selected, setSelected] = useState<Recommendation | null>(null)
+  const [cuisineFilters, setCuisineFilters] = useState<string[]>(onboarding.cuisines || [])
+  const [cookRec, setCookRec] = useState<Recommendation | null>(null)
 
   // Voice input state
   const [recState, setRecState] = useState<RecognitionState>('idle')
@@ -94,6 +110,61 @@ export default function Chat() {
     }
   }
 
+  const recs = useMemo(
+    () =>
+      recommend({
+        ingredients,
+        mealType: mealType || undefined,
+        dietTags: dietFilters,
+        cuisines: cuisineFilters.length ? cuisineFilters : onboarding.cuisines,
+        experience: onboarding.experience,
+        likedRecipeIds: useAppStore.getState().likedRecipeIds,
+        dislikedRecipeIds: useAppStore.getState().dislikedRecipeIds,
+      }),
+    [ingredients, mealType, dietFilters, cuisineFilters, onboarding.cuisines, onboarding.experience]
+  )
+
+  // Auto-suggest: push an assistant message with the top 5 whenever inputs change
+  const lastSigRef = useRef<string>('')
+  useEffect(() => {
+    if (ingredients.length === 0) return
+    const top = recs.slice(0, 5)
+    if (top.length === 0) return
+    const sig = JSON.stringify({
+      ings: [...ingredients].sort(),
+      mealType,
+      dietFilters: [...dietFilters].sort(),
+      cuisines: [...(onboarding.cuisines || [])].sort(),
+      exp: onboarding.experience,
+      ids: top.map((t) => t.recipe.id),
+    })
+    if (sig === lastSigRef.current) return
+    lastSigRef.current = sig
+
+    const lines = top.map(
+      (t, idx) => `${idx + 1}. ${t.recipe.title} — ${Math.round(t.matchPercent * 100)}% match` +
+        (t.missing.length ? ` (missing: ${t.missing.join(', ')})` : '')
+    )
+    addMessage({
+      role: 'assistant',
+      content: `Here are ${top.length} recipe ideas based on your ingredients and preferences:\n\n${lines.join('\n')}`,
+    })
+  }, [ingredients, mealType, dietFilters, cuisineFilters, onboarding.cuisines, onboarding.experience, recs, addMessage])
+
+  // Typing indicator: show for a short time when inputs change
+  const typingTimer = useRef<number | null>(null)
+  useEffect(() => {
+    if (typingTimer.current) window.clearTimeout(typingTimer.current)
+    setTyping(true)
+    typingTimer.current = window.setTimeout(() => setTyping(false), 700)
+    return () => {
+      if (typingTimer.current) window.clearTimeout(typingTimer.current)
+    }
+  }, [ingredients, mealType, dietFilters, cuisineFilters, onboarding.cuisines, onboarding.experience])
+
+  const toggleDiet = (key: string) =>
+    setDietFilters((d) => (d.includes(key) ? d.filter((k) => k !== key) : [...d, key]))
+
   return (
     <div className="grid gap-6 md:grid-cols-2">
       {/* Ingredients & Inputs */}
@@ -116,6 +187,43 @@ export default function Chat() {
         ) : (
           <p className="mb-3 text-sm opacity-70">Add ingredients via text, camera, or voice.</p>
         )}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs opacity-70">Meal:</span>
+          {(['breakfast', 'lunch', 'dinner'] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => setMealType((prev) => (prev === m ? '' : m))}
+              className={`rounded-full border px-3 py-1 text-xs ${mealType === m ? 'border-brand bg-brand/20' : 'border-white/10 hover:border-white/20'}`}
+            >
+              {m}
+            </button>
+          ))}
+          <span className="ml-2 text-xs opacity-70">Diet:</span>
+          {(onboarding.dietaryPrefs || []).map((d) => (
+            <button
+              key={d}
+              onClick={() => toggleDiet(d)}
+              className={`rounded-full border px-3 py-1 text-xs ${dietFilters.includes(d) ? 'border-accent bg-accent/20' : 'border-white/10 hover:border-white/20'}`}
+            >
+              {d}
+            </button>
+          ))}
+          <span className="ml-2 text-xs opacity-70">Cuisines:</span>
+          {(CUISINE_OPTIONS || []).slice(0, 6).map((c) => (
+            <button
+              key={c.key}
+              onClick={() =>
+                setCuisineFilters((cs) => (cs.includes(c.key) ? cs.filter((x) => x !== c.key) : [...cs, c.key]))
+              }
+              className={`rounded-full border px-3 py-1 text-xs ${
+                cuisineFilters.includes(c.key) ? 'border-brand bg-brand/20' : 'border-white/10 hover:border-white/20'
+              }`}
+              title="Cuisine preference"
+            >
+              {c.label}
+            </button>
+          ))}
+        </div>
         <div className="mb-3 flex items-center gap-2">
           <input
             value={text}
@@ -164,6 +272,25 @@ export default function Chat() {
             </button>
           )}
         </div>
+
+        {/* Recommendations */}
+        <div className="mt-6">
+          <div className="mb-2 flex items-center justify-between">
+            <h4 className="text-md font-semibold">Recommended Recipes</h4>
+            {typing && <div className="text-xs opacity-80">👨‍🍳 Cooking…</div>}
+          </div>
+          {recs.length === 0 ? (
+            <div className="text-sm opacity-70">Add a few ingredients to get suggestions.</div>
+          ) : (
+            <ul className="space-y-2">
+              {recs.slice(0, 5).map((r) => (
+                <li key={r.recipe.id}>
+                  <RecipeCard rec={r} onClick={setSelected} />
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </section>
 
       {/* Chat */}
@@ -191,7 +318,46 @@ export default function Chat() {
           />
           <button onClick={onSendMessage} className="rounded-md bg-accent px-3 py-2 text-black hover:bg-accent/90">Send</button>
         </div>
+
+        {/* Shopping Assistant */}
+        <div className="mt-6">
+          <h4 className="mb-2 text-md font-semibold">Shopping List 🛒</h4>
+          {shoppingList.length === 0 ? (
+            <div className="text-sm opacity-70">Add missing ingredients from a recipe to build your list.</div>
+          ) : (
+            <ul className="space-y-2">
+              {shoppingList.map((item) => (
+                <li key={item} className="flex items-center justify-between rounded-md border border-white/10 bg-white/5 px-3 py-2 text-sm">
+                  <span>{item}</span>
+                  <button
+                    onClick={() => removeFromList(item)}
+                    className="rounded-md border border-white/10 px-2 py-1 text-xs hover:border-white/20"
+                  >
+                    Remove
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+          {shoppingList.length > 0 && (
+            <button onClick={clearList} className="mt-2 rounded-md border border-white/10 px-3 py-1 text-sm hover:border-white/20">Clear List</button>
+          )}
+        </div>
       </section>
+      {selected && (
+        <RecipeDetailsModal
+          rec={selected}
+          onClose={() => setSelected(null)}
+          onStartCook={(rec) => {
+            setSelected(null)
+            setCookRec(rec)
+          }}
+        />
+      )}
+      {cookRec && (
+        <CookMode rec={cookRec} onClose={() => setCookRec(null)} />
+      )}
     </div>
   )
 }
+
