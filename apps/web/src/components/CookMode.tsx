@@ -1,4 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { useState, useEffect } from 'react'
+import { X, ChevronLeft, ChevronRight, Clock, Users } from 'lucide-react'
+import { useAppStore } from '../store/useAppStore'
 import type { Recommendation } from '../services/recommend'
 
 type Props = {
@@ -7,88 +9,121 @@ type Props = {
 }
 
 export default function CookMode({ rec, onClose }: Props) {
-  const steps = useMemo(() => rec.recipe.steps, [rec])
-  const [idx, setIdx] = useState(0)
-  const [seconds, setSeconds] = useState(0)
-  const [running, setRunning] = useState(false)
-  const timerRef = useRef<number | null>(null)
+  const [currentStep, setCurrentStep] = useState(0)
+  const [isCompleted, setIsCompleted] = useState(false)
+  const [startTime] = useState(Date.now())
+  const trackCookingStart = useAppStore((s) => s.trackCookingStart)
+  const trackCookingComplete = useAppStore((s) => s.trackCookingComplete)
+  const trackCookingAbandon = useAppStore((s) => s.trackCookingAbandon)
 
   useEffect(() => {
-    if (running) {
-      timerRef.current = window.setInterval(() => {
-        setSeconds((s) => s + 1)
-      }, 1000)
-    }
+    trackCookingStart(rec.recipe.id)
+    
     return () => {
-      if (timerRef.current) window.clearInterval(timerRef.current)
-      timerRef.current = null
+      if (!isCompleted) {
+        const duration = Date.now() - startTime
+        trackCookingAbandon(rec.recipe.id, duration)
+      }
     }
-  }, [running])
+  }, [rec.recipe.id, trackCookingStart, trackCookingAbandon, startTime, isCompleted])
 
-  const toggleTimer = () => setRunning((r) => !r)
-  const resetTimer = () => setSeconds(0)
-
-  const next = () => {
-    setIdx((i) => Math.min(i + 1, steps.length - 1))
-    setSeconds(0)
-  }
-  const prev = () => {
-    setIdx((i) => Math.max(i - 1, 0))
-    setSeconds(0)
+  const nextStep = () => {
+    if (currentStep < rec.recipe.steps.length - 1) {
+      setCurrentStep(currentStep + 1)
+    } else {
+      const duration = Date.now() - startTime
+      trackCookingComplete(rec.recipe.id, duration)
+      setIsCompleted(true)
+    }
   }
 
-  const mins = Math.floor(seconds / 60)
-  const secs = seconds % 60
+  const prevStep = () => {
+    if (currentStep > 0) {
+      setCurrentStep(currentStep - 1)
+    }
+  }
+
+  const handleClose = () => {
+    if (!isCompleted) {
+      const duration = Date.now() - startTime
+      trackCookingAbandon(rec.recipe.id, duration)
+    }
+    onClose()
+  }
+
+  if (isCompleted) {
+    return (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+        <div className="w-full max-w-md rounded-lg bg-gray-900 p-6 text-center">
+          <h2 className="mb-4 text-2xl font-bold text-green-400">🎉 Recipe Complete!</h2>
+          <p className="mb-6 opacity-80">Great job cooking {rec.recipe.title}!</p>
+          <button
+            onClick={onClose}
+            className="rounded-md bg-brand px-6 py-2 font-medium text-black hover:bg-brand/90"
+          >
+            Done
+          </button>
+        </div>
+      </div>
+    )
+  }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end justify-center sm:items-center">
-      <div className="absolute inset-0 bg-black/70" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-3xl rounded-t-2xl border border-white/10 bg-surface-light text-white shadow-xl sm:rounded-2xl">
-        <div className="flex items-center justify-between gap-3 border-b border-white/10 px-4 py-3">
-          <div>
-            <div className="text-sm opacity-70">Cook Mode</div>
-            <h3 className="text-lg font-semibold">{rec.recipe.title}</h3>
-          </div>
-          <button onClick={onClose} className="rounded-md border border-white/10 px-3 py-1 text-sm hover:border-white/20">Exit</button>
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4">
+      <div className="w-full max-w-2xl rounded-lg bg-gray-900 p-6">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-xl font-bold">{rec.recipe.title}</h2>
+          <button
+            onClick={handleClose}
+            className="rounded-full p-2 hover:bg-white/10"
+          >
+            <X size={20} />
+          </button>
         </div>
 
-        <div className="grid gap-4 p-4 sm:grid-cols-3">
-          <div className="sm:col-span-2">
-            <div className="mb-2 text-xs opacity-70">Step {idx + 1} of {steps.length}</div>
-            <div className="min-h-[140px] rounded-lg border border-white/10 bg-white/5 p-4 text-base leading-relaxed">
-              {steps[idx]}
-            </div>
+        <div className="mb-4 flex items-center gap-4 text-sm opacity-70">
+          <div className="flex items-center gap-1">
+            <Clock size={14} />
+            <span>{rec.recipe.timeMinutes || 30}m</span>
+          </div>
+          <div className="flex items-center gap-1">
+            <Users size={14} />
+            <span>Step {currentStep + 1} of {rec.recipe.steps.length}</span>
+          </div>
+        </div>
 
-            <div className="mt-3 flex items-center justify-between gap-2">
-              <div className="flex items-center gap-2">
-                <button onClick={prev} disabled={idx === 0} className="rounded-md border border-white/10 px-3 py-2 text-sm disabled:opacity-50 hover:border-white/20">Prev</button>
-                <button onClick={next} disabled={idx === steps.length - 1} className="rounded-md border border-white/10 px-3 py-2 text-sm disabled:opacity-50 hover:border-white/20">Next</button>
-              </div>
-              <div className="text-xs opacity-80">
-                {rec.recipe.mealType} • {rec.recipe.timeMinutes ?? 0}m • {Math.round(rec.matchPercent * 100)}% match
-              </div>
-            </div>
+        <div className="mb-6 rounded-lg border border-white/10 bg-white/5 p-4">
+          <p className="text-lg leading-relaxed">{rec.recipe.steps[currentStep]}</p>
+        </div>
+
+        <div className="flex items-center justify-between">
+          <button
+            onClick={prevStep}
+            disabled={currentStep === 0}
+            className="flex items-center gap-2 rounded-md border border-white/10 px-4 py-2 disabled:opacity-50"
+          >
+            <ChevronLeft size={16} />
+            Previous
+          </button>
+
+          <div className="flex gap-1">
+            {rec.recipe.steps.map((_, idx) => (
+              <div
+                key={idx}
+                className={`h-2 w-2 rounded-full ${
+                  idx === currentStep ? 'bg-brand' : idx < currentStep ? 'bg-green-500' : 'bg-white/20'
+                }`}
+              />
+            ))}
           </div>
 
-          <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-            <div className="mb-2 text-sm font-medium">⏱️ Step Timer</div>
-            <div className="mb-3 text-3xl tabular-nums">{String(mins).padStart(2, '0')}:{String(secs).padStart(2, '0')}</div>
-            <div className="flex items-center gap-2">
-              <button onClick={toggleTimer} className="rounded-md bg-accent px-3 py-2 text-sm font-medium text-black hover:bg-accent/90">
-                {running ? 'Pause' : 'Start'}
-              </button>
-              <button onClick={resetTimer} className="rounded-md border border-white/10 px-3 py-2 text-sm hover:border-white/20">Reset</button>
-            </div>
-
-            <div className="mt-5 text-sm">
-              <div className="mb-1 font-medium">Tips 👨‍🍳</div>
-              <ul className="list-disc space-y-1 pl-5 opacity-90">
-                <li>Read the next step before proceeding.</li>
-                <li>Use the timer to stay on track.</li>
-                <li>Add missing items to your shopping list from the details view.</li>
-              </ul>
-            </div>
-          </div>
+          <button
+            onClick={nextStep}
+            className="flex items-center gap-2 rounded-md bg-brand px-4 py-2 font-medium text-black hover:bg-brand/90"
+          >
+            {currentStep === rec.recipe.steps.length - 1 ? 'Complete' : 'Next'}
+            <ChevronRight size={16} />
+          </button>
         </div>
       </div>
     </div>
