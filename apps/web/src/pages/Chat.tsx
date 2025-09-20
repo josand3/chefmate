@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { uploadIngredientImage } from '../services/vision'
 import { recommend, type Recommendation } from '../services/recommend'
+import { organizeShoppingList, getNearbyStores, getIngredientSubstitutes, type Store } from '../services/shopping'
 import RecipeCard from '../components/RecipeCard'
 import RecipeDetailsModal from '../components/RecipeDetailsModal'
 import CookMode from '../components/CookMode'
@@ -34,6 +35,9 @@ export default function Chat() {
   const [selected, setSelected] = useState<Recommendation | null>(null)
   const [cuisineFilters, setCuisineFilters] = useState<string[]>(onboarding.cuisines || [])
   const [cookRec, setCookRec] = useState<Recommendation | null>(null)
+  const [nearbyStores, setNearbyStores] = useState<Store[]>([])
+  const [showStores, setShowStores] = useState(false)
+  const [organizedList, setOrganizedList] = useState<ReturnType<typeof organizeShoppingList> | null>(null)
 
   // Voice input state
   const [recState, setRecState] = useState<RecognitionState>('idle')
@@ -74,11 +78,15 @@ export default function Chat() {
   const onAddIngredient = () => {
     if (!text.trim()) return
     // simple comma/space split to tags
-    text
+    const newIngredients = text
       .split(/[\,\n]/)
       .map((s) => s.trim())
       .filter(Boolean)
-      .forEach(addIngredient)
+    
+    newIngredients.forEach(addIngredient)
+    
+    useAppStore.getState().updateIngredientFrequency(newIngredients)
+    
     setText('')
   }
 
@@ -111,8 +119,9 @@ export default function Chat() {
   }
 
   const recs = useMemo(
-    () =>
-      recommend({
+    () => {
+      const behaviorData = useAppStore.getState().getRecommendationData()
+      return recommend({
         ingredients,
         mealType: mealType || undefined,
         dietTags: dietFilters,
@@ -120,8 +129,13 @@ export default function Chat() {
         experience: onboarding.experience,
         likedRecipeIds: useAppStore.getState().likedRecipeIds,
         dislikedRecipeIds: useAppStore.getState().dislikedRecipeIds,
-      }),
-    [ingredients, mealType, dietFilters, cuisineFilters, onboarding.cuisines, onboarding.experience]
+        recentlyViewedIds: behaviorData.recentlyViewedIds,
+        ingredientFrequency: behaviorData.ingredientFrequency,
+        cuisineCompletionRates: behaviorData.cuisineCompletionRates,
+        zipCode: onboarding.zipCode
+      })
+    },
+    [ingredients, mealType, dietFilters, cuisineFilters, onboarding.cuisines, onboarding.experience, onboarding.zipCode]
   )
 
   // Auto-suggest: push an assistant message with the top 5 whenever inputs change
@@ -142,8 +156,9 @@ export default function Chat() {
     lastSigRef.current = sig
 
     const lines = top.map(
-      (t, idx) => `${idx + 1}. ${t.recipe.title} — ${Math.round(t.matchPercent * 100)}% match` +
-        (t.missing.length ? ` (missing: ${t.missing.join(', ')})` : '')
+      (t, idx) => `${idx + 1}. ${t.recipe.title} — ${Math.round(t.score * 100)}% match` +
+        (t.missing.length ? ` (missing: ${t.missing.join(', ')})` : '') +
+        (t.reasons.length ? ` • ${t.reasons[0]}` : '')
     )
     addMessage({
       role: 'assistant',
@@ -164,6 +179,28 @@ export default function Chat() {
 
   const toggleDiet = (key: string) =>
     setDietFilters((d) => (d.includes(key) ? d.filter((k) => k !== key) : [...d, key]))
+
+  useEffect(() => {
+    if (shoppingList.length > 0) {
+      setOrganizedList(organizeShoppingList(shoppingList))
+    } else {
+      setOrganizedList(null)
+    }
+  }, [shoppingList])
+
+  const handleFindStores = async () => {
+    if (onboarding.zipCode && shoppingList.length > 0) {
+      setShowStores(true)
+      const stores = await getNearbyStores(onboarding.zipCode, shoppingList)
+      setNearbyStores(stores)
+    }
+  }
+
+  const handleAddMissingIngredients = (missingIngredients: string[]) => {
+    missingIngredients.forEach(ingredient => {
+      addToList(ingredient)
+    })
+  }
 
   return (
     <div className="grid gap-6 md:grid-cols-2">
@@ -285,7 +322,10 @@ export default function Chat() {
             <ul className="space-y-2">
               {recs.slice(0, 5).map((r) => (
                 <li key={r.recipe.id}>
-                  <RecipeCard rec={r} onClick={setSelected} />
+                  <RecipeCard rec={r} onClick={(rec) => {
+                    useAppStore.getState().trackRecipeView(rec.recipe.id)
+                    setSelected(rec)
+                  }} />
                 </li>
               ))}
             </ul>
@@ -321,9 +361,43 @@ export default function Chat() {
 
         {/* Shopping Assistant */}
         <div className="mt-6">
-          <h4 className="mb-2 text-md font-semibold">Shopping List 🛒</h4>
+          <div className="mb-2 flex items-center justify-between">
+            <h4 className="text-md font-semibold">Shopping List 🛒</h4>
+            {shoppingList.length > 0 && onboarding.zipCode && (
+              <button
+                onClick={handleFindStores}
+                className="rounded-md border border-white/10 px-2 py-1 text-xs hover:border-white/20"
+              >
+                Find Stores
+              </button>
+            )}
+          </div>
+          
           {shoppingList.length === 0 ? (
             <div className="text-sm opacity-70">Add missing ingredients from a recipe to build your list.</div>
+          ) : organizedList ? (
+            <div className="space-y-3">
+              {Object.entries(organizedList).map(([category, items]) => 
+                items.length > 0 && (
+                  <div key={category} className="rounded-md border border-white/10 bg-white/5 p-3">
+                    <h5 className="mb-2 text-xs font-medium uppercase opacity-70">{category}</h5>
+                    <ul className="space-y-1">
+                      {items.map((item) => (
+                        <li key={item.name} className="flex items-center justify-between text-sm">
+                          <span>{item.name} {item.quantity && `(${item.quantity})`}</span>
+                          <button
+                            onClick={() => removeFromList(item.name)}
+                            className="rounded-md border border-white/10 px-2 py-0.5 text-xs hover:border-white/20"
+                          >
+                            ×
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )
+              )}
+            </div>
           ) : (
             <ul className="space-y-2">
               {shoppingList.map((item) => (
@@ -339,8 +413,32 @@ export default function Chat() {
               ))}
             </ul>
           )}
+          
           {shoppingList.length > 0 && (
-            <button onClick={clearList} className="mt-2 rounded-md border border-white/10 px-3 py-1 text-sm hover:border-white/20">Clear List</button>
+            <div className="mt-2 flex gap-2">
+              <button onClick={clearList} className="rounded-md border border-white/10 px-3 py-1 text-sm hover:border-white/20">Clear List</button>
+            </div>
+          )}
+          
+          {showStores && nearbyStores.length > 0 && (
+            <div className="mt-4 rounded-md border border-white/10 bg-white/5 p-3">
+              <h5 className="mb-2 text-sm font-medium">Nearby Stores</h5>
+              <ul className="space-y-2">
+                {nearbyStores.map((store, idx) => (
+                  <li key={idx} className="text-sm">
+                    <div className="font-medium">{store.name}</div>
+                    <div className="text-xs opacity-70">{store.address} • {store.distance}</div>
+                    <div className="text-xs opacity-70">Est. cost: {store.estimatedCost}</div>
+                  </li>
+                ))}
+              </ul>
+              <button
+                onClick={() => setShowStores(false)}
+                className="mt-2 rounded-md border border-white/10 px-2 py-1 text-xs hover:border-white/20"
+              >
+                Hide Stores
+              </button>
+            </div>
           )}
         </div>
       </section>

@@ -74,6 +74,158 @@ app.post('/api/vision/ingredients', upload.single('image'), async (req, res) => 
   }
 })
 
+app.get('/api/recipes', async (req, res) => {
+  try {
+    const fs = await import('fs/promises')
+    const path = await import('path')
+    const recipesPath = path.join(__dirname, 'data', 'recipes.json')
+    const recipesData = await fs.readFile(recipesPath, 'utf-8')
+    const recipes = JSON.parse(recipesData)
+    
+    res.json({ recipes })
+  } catch (err: any) {
+    console.error('Recipe fetch error', err)
+    res.status(500).json({ error: 'Failed to fetch recipes' })
+  }
+})
+
+app.post('/api/recipes/recommend', async (req, res) => {
+  try {
+    const {
+      ingredients = [],
+      mealType,
+      dietTags = [],
+      cuisines = [],
+      experience = '',
+      likedRecipeIds = [],
+      dislikedRecipeIds = [],
+      behaviorData = {}
+    } = req.body
+
+    res.json({
+      success: true,
+      message: 'Enhanced recommendation endpoint ready',
+      receivedData: {
+        ingredientCount: ingredients.length,
+        mealType,
+        dietTagCount: dietTags.length,
+        cuisineCount: cuisines.length,
+        experience,
+        likedCount: likedRecipeIds.length,
+        dislikedCount: dislikedRecipeIds.length
+      }
+    })
+  } catch (err: any) {
+    console.error('Recommendation error', err)
+    res.status(500).json({ error: 'Recipe recommendation failed' })
+  }
+})
+
+app.post('/api/user/behavior', async (req, res) => {
+  try {
+    const {
+      action,
+      recipeId,
+      ingredients = [],
+      duration,
+      timestamp = Date.now()
+    } = req.body
+
+    if (!action || !recipeId) {
+      return res.status(400).json({ error: 'Action and recipeId are required' })
+    }
+
+    console.log('Behavior tracked:', { action, recipeId, timestamp })
+
+    res.json({
+      success: true,
+      message: 'Behavior tracked successfully',
+      data: { action, recipeId, timestamp }
+    })
+  } catch (err: any) {
+    console.error('Behavior tracking error', err)
+    res.status(500).json({ error: 'Behavior tracking failed' })
+  }
+})
+
+app.get('/api/ingredients/substitutes', async (req, res) => {
+  try {
+    const { ingredient } = req.query
+
+    if (!ingredient || typeof ingredient !== 'string') {
+      return res.status(400).json({ error: 'Ingredient parameter is required' })
+    }
+
+    const substitutes: Record<string, string[]> = {
+      'ground beef': ['ground turkey', 'ground chicken', 'lentils', 'mushrooms'],
+      'chicken breast': ['chicken thigh', 'turkey breast', 'tofu', 'tempeh'],
+      'butter': ['margarine', 'olive oil', 'coconut oil', 'applesauce'],
+      'milk': ['almond milk', 'soy milk', 'oat milk', 'coconut milk'],
+      'egg': ['flax egg', 'chia egg', 'applesauce', 'banana'],
+      'flour': ['almond flour', 'coconut flour', 'oat flour', 'rice flour'],
+      'sugar': ['honey', 'maple syrup', 'stevia', 'coconut sugar'],
+      'soy sauce': ['tamari', 'coconut aminos', 'worcestershire sauce'],
+      'heavy cream': ['coconut cream', 'cashew cream', 'greek yogurt'],
+      'parmesan': ['nutritional yeast', 'pecorino romano', 'asiago']
+    }
+
+    const ingredientLower = ingredient.toLowerCase().trim()
+    const suggestions = substitutes[ingredientLower] || []
+
+    res.json({
+      ingredient: ingredientLower,
+      substitutes: suggestions,
+      count: suggestions.length
+    })
+  } catch (err: any) {
+    console.error('Substitution error', err)
+    res.status(500).json({ error: 'Substitution lookup failed' })
+  }
+})
+
+app.get('/api/shopping/stores', async (req, res) => {
+  try {
+    const { zipCode, ingredients } = req.query
+
+    if (!zipCode || typeof zipCode !== 'string') {
+      return res.status(400).json({ error: 'zipCode parameter is required' })
+    }
+
+    const mockStores = [
+      {
+        name: 'Whole Foods Market',
+        address: '123 Main St',
+        distance: '0.8 miles',
+        hasIngredients: Array.isArray(ingredients) ? ingredients.slice(0, 3) : [],
+        estimatedCost: '$25-35'
+      },
+      {
+        name: 'Safeway',
+        address: '456 Oak Ave',
+        distance: '1.2 miles',
+        hasIngredients: Array.isArray(ingredients) ? ingredients.slice(1, 4) : [],
+        estimatedCost: '$20-30'
+      },
+      {
+        name: 'Trader Joe\'s',
+        address: '789 Pine St',
+        distance: '1.5 miles',
+        hasIngredients: Array.isArray(ingredients) ? ingredients.slice(0, 2) : [],
+        estimatedCost: '$18-25'
+      }
+    ]
+
+    res.json({
+      zipCode,
+      stores: mockStores,
+      searchRadius: '5 miles'
+    })
+  } catch (err: any) {
+    console.error('Store lookup error', err)
+    res.status(500).json({ error: 'Store lookup failed' })
+  }
+})
+
 const PORT = process.env.PORT || 5050
 app.listen(PORT, () => {
   console.log(`ChefMate API listening on http://localhost:${PORT}`)
