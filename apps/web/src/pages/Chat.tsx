@@ -2,7 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../store/useAppStore'
 import { uploadIngredientImage } from '../services/vision'
 import { recommend, type Recommendation } from '../services/recommend'
-import { organizeShoppingList, getNearbyStores, getIngredientSubstitutes, type Store } from '../services/shopping'
+import { organizeShoppingList, getNearbyStores, getIngredientSubstitutes, type Store, type ShoppingItem } from '../services/shopping'
+import { generateRecipe, validateGenerationRequest, type RecipeGenerationRequest, type GeneratedRecipe } from '../services/recipeGeneration'
 import RecipeCard from '../components/RecipeCard'
 import RecipeDetailsModal from '../components/RecipeDetailsModal'
 import CookMode from '../components/CookMode'
@@ -38,6 +39,9 @@ export default function Chat() {
   const [nearbyStores, setNearbyStores] = useState<Store[]>([])
   const [showStores, setShowStores] = useState(false)
   const [organizedList, setOrganizedList] = useState<ReturnType<typeof organizeShoppingList> | null>(null)
+  const [showRecipeGenerator, setShowRecipeGenerator] = useState(false)
+  const [generatingRecipe, setGeneratingRecipe] = useState(false)
+  const [generatedRecipe, setGeneratedRecipe] = useState<GeneratedRecipe | null>(null)
 
   // Voice input state
   const [recState, setRecState] = useState<RecognitionState>('idle')
@@ -202,6 +206,33 @@ export default function Chat() {
     })
   }
 
+  const handleGenerateRecipe = async (request: RecipeGenerationRequest) => {
+    const validationErrors = validateGenerationRequest(request)
+    if (validationErrors.length > 0) {
+      alert('Please fix the following issues:\n' + validationErrors.join('\n'))
+      return
+    }
+
+    setGeneratingRecipe(true)
+    try {
+      const recipe = await generateRecipe(request)
+      setGeneratedRecipe(recipe)
+      
+      addMessage({
+        role: 'assistant',
+        content: `Generated custom recipe: ${recipe.title}`,
+        generatedRecipe: recipe
+      })
+      
+      setShowRecipeGenerator(false)
+    } catch (error) {
+      console.error('Recipe generation failed:', error)
+      alert('Failed to generate recipe: ' + (error as Error).message)
+    } finally {
+      setGeneratingRecipe(false)
+    }
+  }
+
   return (
     <div className="grid gap-6 md:grid-cols-2">
       {/* Ingredients & Inputs */}
@@ -300,6 +331,14 @@ export default function Chat() {
             {recState === 'listening' ? 'Listening… 🎙️' : 'Voice Input 🎤'}
           </button>
 
+          <button
+            onClick={() => setShowRecipeGenerator(true)}
+            className="rounded-md border border-brand/30 bg-brand/10 px-3 py-2 hover:bg-brand/20"
+            title="Generate custom recipe with AI"
+          >
+            ✨ AI Recipe
+          </button>
+
           {ingredients.length > 0 && (
             <button
               onClick={clearIngredients}
@@ -343,6 +382,24 @@ export default function Chat() {
           {messages.map((m) => (
             <div key={m.id} className={`max-w-[80%] rounded-md px-3 py-2 text-sm ${m.role === 'user' ? 'ml-auto bg-brand text-black' : 'bg-white/10'}`}>
               {m.content}
+              {(m as any).generatedRecipe && (
+                <div className="mt-3">
+                  <RecipeCard
+                    rec={{
+                      recipe: (m as any).generatedRecipe,
+                      score: 1.0,
+                      matchPercent: 1.0,
+                      missing: [],
+                      matched: [],
+                      reasons: ['AI Generated Recipe', 'Custom made for your ingredients']
+                    }}
+                    onClick={(rec) => {
+                      useAppStore.getState().trackRecipeView(rec.recipe.id)
+                      setSelected(rec)
+                    }}
+                  />
+                </div>
+              )}
             </div>
           ))}
         </div>
@@ -378,11 +435,11 @@ export default function Chat() {
           ) : organizedList ? (
             <div className="space-y-3">
               {Object.entries(organizedList).map(([category, items]) => 
-                items.length > 0 && (
+                (items as ShoppingItem[]).length > 0 && (
                   <div key={category} className="rounded-md border border-white/10 bg-white/5 p-3">
                     <h5 className="mb-2 text-xs font-medium uppercase opacity-70">{category}</h5>
                     <ul className="space-y-1">
-                      {items.map((item) => (
+                      {(items as ShoppingItem[]).map((item: ShoppingItem) => (
                         <li key={item.name} className="flex items-center justify-between text-sm">
                           <span>{item.name} {item.quantity && `(${item.quantity})`}</span>
                           <button
@@ -455,6 +512,262 @@ export default function Chat() {
       {cookRec && (
         <CookMode rec={cookRec} onClose={() => setCookRec(null)} />
       )}
+      {showRecipeGenerator && (
+        <RecipeGeneratorModal
+          onClose={() => setShowRecipeGenerator(false)}
+          onGenerate={handleGenerateRecipe}
+          isGenerating={generatingRecipe}
+          availableIngredients={ingredients}
+          userPreferences={{
+            dietTags: onboarding.dietaryPrefs || [],
+            cuisines: onboarding.cuisines || [],
+            experience: onboarding.experience
+          }}
+        />
+      )}
+    </div>
+  )
+}
+
+function RecipeGeneratorModal({ 
+  onClose, 
+  onGenerate, 
+  isGenerating, 
+  availableIngredients,
+  userPreferences 
+}: { 
+  onClose: () => void
+  onGenerate: (request: RecipeGenerationRequest) => void
+  isGenerating: boolean
+  availableIngredients: string[]
+  userPreferences: {
+    dietTags: string[]
+    cuisines: string[]
+    experience: string
+  }
+}) {
+  const [selectedIngredients, setSelectedIngredients] = useState<string[]>(availableIngredients.slice(0, 5))
+  const [customIngredient, setCustomIngredient] = useState('')
+  const [selectedDietTags, setSelectedDietTags] = useState<string[]>(userPreferences.dietTags)
+  const [selectedCuisines, setSelectedCuisines] = useState<string[]>(userPreferences.cuisines.slice(0, 2))
+  const [experience, setExperience] = useState(userPreferences.experience)
+  const [timeConstraints, setTimeConstraints] = useState(30)
+  const [mealType, setMealType] = useState<'breakfast' | 'lunch' | 'dinner'>('dinner')
+
+  const addCustomIngredient = () => {
+    if (customIngredient.trim() && !selectedIngredients.includes(customIngredient.trim())) {
+      setSelectedIngredients([...selectedIngredients, customIngredient.trim()])
+      setCustomIngredient('')
+    }
+  }
+
+  const removeIngredient = (ingredient: string) => {
+    setSelectedIngredients(selectedIngredients.filter(i => i !== ingredient))
+  }
+
+  const toggleDietTag = (tag: string) => {
+    setSelectedDietTags(prev => 
+      prev.includes(tag) ? prev.filter(t => t !== tag) : [...prev, tag]
+    )
+  }
+
+  const toggleCuisine = (cuisine: string) => {
+    setSelectedCuisines(prev => 
+      prev.includes(cuisine) ? prev.filter(c => c !== cuisine) : [...prev, cuisine]
+    )
+  }
+
+  const handleSubmit = () => {
+    const request: RecipeGenerationRequest = {
+      ingredients: selectedIngredients,
+      dietTags: selectedDietTags,
+      cuisines: selectedCuisines,
+      experience,
+      timeConstraints,
+      mealType
+    }
+    onGenerate(request)
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+      <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-lg border border-white/10 bg-black/90 p-6">
+        <div className="mb-4 flex items-center justify-between">
+          <h2 className="text-xl font-semibold">Generate Custom Recipe</h2>
+          <button
+            onClick={onClose}
+            className="rounded-md border border-white/10 px-3 py-1 hover:border-white/20"
+            disabled={isGenerating}
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="space-y-6">
+          {/* Ingredients Section */}
+          <div>
+            <h3 className="mb-3 text-lg font-medium">Ingredients</h3>
+            <div className="mb-3 flex flex-wrap gap-2">
+              {selectedIngredients.map((ingredient) => (
+                <span key={ingredient} className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm">
+                  {ingredient}
+                  <button
+                    onClick={() => removeIngredient(ingredient)}
+                    className="rounded-full bg-white/10 px-2 py-0.5 text-xs hover:bg-white/20"
+                    disabled={isGenerating}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={customIngredient}
+                onChange={(e) => setCustomIngredient(e.target.value)}
+                placeholder="Add custom ingredient..."
+                className="flex-1 rounded-md border border-white/10 bg-black/40 px-3 py-2 outline-none focus:border-brand"
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') addCustomIngredient()
+                }}
+                disabled={isGenerating}
+              />
+              <button
+                onClick={addCustomIngredient}
+                className="rounded-md bg-brand px-3 py-2 text-black hover:bg-brand/90"
+                disabled={isGenerating}
+              >
+                Add
+              </button>
+            </div>
+            <div className="mt-3">
+              <p className="mb-2 text-sm opacity-70">Available ingredients:</p>
+              <div className="flex flex-wrap gap-2">
+                {availableIngredients.filter(ing => !selectedIngredients.includes(ing)).map((ingredient) => (
+                  <button
+                    key={ingredient}
+                    onClick={() => setSelectedIngredients([...selectedIngredients, ingredient])}
+                    className="rounded-full border border-white/10 px-3 py-1 text-sm hover:border-white/20"
+                    disabled={isGenerating}
+                  >
+                    + {ingredient}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Meal Type */}
+          <div>
+            <h3 className="mb-3 text-lg font-medium">Meal Type</h3>
+            <div className="flex gap-2">
+              {(['breakfast', 'lunch', 'dinner'] as const).map((type) => (
+                <button
+                  key={type}
+                  onClick={() => setMealType(type)}
+                  className={`rounded-full border px-4 py-2 text-sm ${
+                    mealType === type ? 'border-brand bg-brand/20' : 'border-white/10 hover:border-white/20'
+                  }`}
+                  disabled={isGenerating}
+                >
+                  {type.charAt(0).toUpperCase() + type.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Time Constraints */}
+          <div>
+            <h3 className="mb-3 text-lg font-medium">Time Limit</h3>
+            <div className="flex items-center gap-4">
+              <input
+                type="range"
+                min="15"
+                max="120"
+                value={timeConstraints}
+                onChange={(e) => setTimeConstraints(Number(e.target.value))}
+                className="flex-1"
+                disabled={isGenerating}
+              />
+              <span className="text-sm">{timeConstraints} minutes</span>
+            </div>
+          </div>
+
+          {/* Dietary Preferences */}
+          <div>
+            <h3 className="mb-3 text-lg font-medium">Dietary Preferences</h3>
+            <div className="flex flex-wrap gap-2">
+              {['vegetarian', 'vegan', 'gluten-free', 'dairy-free', 'low-carb', 'keto', 'paleo'].map((diet) => (
+                <button
+                  key={diet}
+                  onClick={() => toggleDietTag(diet)}
+                  className={`rounded-full border px-3 py-1 text-sm ${
+                    selectedDietTags.includes(diet) ? 'border-accent bg-accent/20' : 'border-white/10 hover:border-white/20'
+                  }`}
+                  disabled={isGenerating}
+                >
+                  {diet}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Cuisine Style */}
+          <div>
+            <h3 className="mb-3 text-lg font-medium">Cuisine Style</h3>
+            <div className="flex flex-wrap gap-2">
+              {CUISINE_OPTIONS.slice(0, 8).map((cuisine) => (
+                <button
+                  key={cuisine.key}
+                  onClick={() => toggleCuisine(cuisine.key)}
+                  className={`rounded-full border px-3 py-1 text-sm ${
+                    selectedCuisines.includes(cuisine.key) ? 'border-brand bg-brand/20' : 'border-white/10 hover:border-white/20'
+                  }`}
+                  disabled={isGenerating}
+                >
+                  {cuisine.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* Experience Level */}
+          <div>
+            <h3 className="mb-3 text-lg font-medium">Cooking Experience</h3>
+            <div className="flex flex-wrap gap-2">
+              {['beginner', 'prep cook', 'line cook', 'sous chef', 'executive chef'].map((level) => (
+                <button
+                  key={level}
+                  onClick={() => setExperience(level)}
+                  className={`rounded-full border px-3 py-1 text-sm ${
+                    experience === level ? 'border-brand bg-brand/20' : 'border-white/10 hover:border-white/20'
+                  }`}
+                  disabled={isGenerating}
+                >
+                  {level.charAt(0).toUpperCase() + level.slice(1)}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-6 flex justify-end gap-3">
+          <button
+            onClick={onClose}
+            className="rounded-md border border-white/10 px-4 py-2 hover:border-white/20"
+            disabled={isGenerating}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSubmit}
+            className="rounded-md bg-brand px-4 py-2 text-black hover:bg-brand/90 disabled:opacity-50"
+            disabled={isGenerating || selectedIngredients.length === 0}
+          >
+            {isGenerating ? 'Generating...' : 'Generate Recipe'}
+          </button>
+        </div>
+      </div>
     </div>
   )
 }

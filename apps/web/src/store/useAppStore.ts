@@ -15,6 +15,7 @@ export type ChatMessage = {
   role: 'user' | 'assistant' | 'system'
   content: string
   ts: number
+  generatedRecipe?: any
 }
 
 export type RecipeInteraction = {
