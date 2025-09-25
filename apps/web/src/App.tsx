@@ -1,40 +1,67 @@
-import { useEffect } from 'react'
-import { Routes, Route, useLocation, useNavigate } from 'react-router-dom'
+import React, { useEffect, useState } from 'react'
 import { useAppStore } from './store/useAppStore'
-import Onboarding from './pages/Onboarding'
-import Chat from './pages/Chat'
+import { ProfileSetup } from './components/figma/ProfileSetup'
+import { SimpleChatInterface } from './components/figma/SimpleChatInterface'
+
+interface UserProfile {
+  cuisinePreferences: string[];
+  dietaryNeeds: string[];
+  skillLevel: string;
+  location: string;
+}
 
 function Shell() {
-  const location = useLocation()
-  const navigate = useNavigate()
   const hasOnboarded = useAppStore((s) => s.hasOnboarded)
-
+  const onboarding = useAppStore((s) => s.onboarding)
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null)
+  
   useEffect(() => {
-    if (!hasOnboarded && location.pathname !== '/onboarding') {
-      navigate('/onboarding', { replace: true })
+    if (hasOnboarded) {
+      const reverseExperienceMapping: { [key: string]: string } = {
+        'beginner': 'stage',
+        'prep cook': 'line-cook',
+        'sous chef': 'sous-chef',
+        'executive chef': 'executive-chef'
+      };
+      
+      setUserProfile({
+        cuisinePreferences: onboarding.cuisines,
+        dietaryNeeds: onboarding.dietaryPrefs,
+        skillLevel: reverseExperienceMapping[onboarding.experience] || onboarding.experience,
+        location: onboarding.zipCode
+      });
     }
-  }, [hasOnboarded, location.pathname, navigate])
+  }, [hasOnboarded, onboarding]);
+
+  const handleProfileComplete = (profile: any) => {
+    const { setOnboarding, completeOnboarding } = useAppStore.getState();
+    
+    const experienceMapping: { [key: string]: string } = {
+      'stage': 'beginner',
+      'line-cook': 'prep cook',
+      'sous-chef': 'sous chef',
+      'executive-chef': 'executive chef'
+    };
+    
+    setOnboarding({
+      zipCode: profile.location || '',
+      dietaryPrefs: profile.dietaryNeeds || [],
+      cuisines: profile.cuisinePreferences || [],
+      experience: experienceMapping[profile.skillLevel] || profile.skillLevel || ''
+    });
+    completeOnboarding();
+    setUserProfile(profile);
+  };
 
   return (
-    <div className="min-h-screen bg-surface-light text-white dark:bg-surface">
-      <header className="sticky top-0 z-10 border-b border-white/10 bg-black/30 backdrop-blur">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2">
-            <span className="inline-block h-6 w-6 rounded bg-brand" />
-            <h1 className="text-lg font-semibold tracking-tight">ChefMate</h1>
-          </div>
-          <div className="text-sm opacity-80">Your conversational cooking assistant</div>
-        </div>
-      </header>
-      <main className="mx-auto max-w-6xl px-4 py-6">
-        <Routes>
-          <Route path="/onboarding" element={<Onboarding />} />
-          <Route path="/chat" element={<Chat />} />
-          <Route path="/" element={<Chat />} />
-        </Routes>
-      </main>
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-teal-100">
+      {!hasOnboarded ? (
+        <ProfileSetup onComplete={handleProfileComplete} userId="current-user" />
+      ) : (
+        <SimpleChatInterface userProfile={userProfile!} userId="current-user" />
+      )}
     </div>
-  )
+  );
 }
 
 export default function App() {
